@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>撤销/重做命令栈 · 操作合并演示</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --border: #e2e4e9;
+    --text: #1f2430;
+    --muted: #6b7280;
+    --accent: #3b82f6;
+    --accent-soft: #eff6ff;
+    --insert: #0f9d58;
+    --insert-bg: #e6f7ef;
+    --delete: #d93025;
+    --delete-bg: #fdecea;
+    --replace: #b15e09;
+    --replace-bg: #fdf3e2;
+    --merged: #7c3aed;
+    --merged-bg: #f3e8ff;
+    --top: #fef9c3;
+    --top-border: #eab308;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px; }
+  header h1 { font-size: 22px; margin: 0 0 4px; }
+  header p { margin: 0 0 20px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .count { font-weight: 500; color: var(--muted); }
+  textarea#editor {
+    width: 100%;
+    height: 220px;
+    resize: vertical;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font: 14px/1.7 var(--mono);
+    outline: none;
+    background: #fafbfc;
+  }
+  textarea#editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }
+  button {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #2563eb; color: #fff; }
+  select {
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+    font-size: 13px; background: #fff;
+  }
+  .hint { color: var(--muted); font-size: 12px; }
+  kbd {
+    font-family: var(--mono); font-size: 11px;
+    border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 5px; background: #fafbfc;
+  }
+  .state-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .pill {
+    font-size: 12px; border-radius: 999px; padding: 2px 10px;
+    border: 1px solid var(--border); background: #fafbfc; color: var(--muted);
+  }
+  .pill b { color: var(--text); font-weight: 600; }
+  .doc-preview {
+    margin-top: 12px; padding: 10px 12px; background: #fafbfc;
+    border: 1px dashed var(--border); border-radius: 8px;
+    font-family: var(--mono); font-size: 12px; word-break: break-all;
+    max-height: 72px; overflow: auto;
+  }
+  .stacks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .stack {
+    border: 1px solid var(--border); border-radius: 8px; min-height: 220px;
+    display: flex; flex-direction: column;
+  }
+  .stack header {
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; display: flex; justify-content: space-between;
+    background: #fafbfc; border-radius: 8px 8px 0 0;
+  }
+  .stack ul { list-style: none; margin: 0; padding: 8px; overflow: auto; flex: 1; }
+  .stack li {
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 6px 8px; margin-bottom: 6px; font-size: 12px;
+    font-family: var(--mono); background: #fafbfc;
+  }
+  .stack li.top { background: var(--top); border-color: var(--top-border); }
+  .stack li .idx { color: var(--muted); margin-right: 6px; }
+  .badge {
+    display: inline-block; border-radius: 4px; padding: 0 6px;
+    font-size: 11px; font-weight: 600; margin-right: 6px;
+  }
+  .badge.insert { color: var(--insert); background: var(--insert-bg); }
+  .badge.delete { color: var(--delete); background: var(--delete-bg); }
+  .badge.replace { color: var(--replace); background: var(--replace-bg); }
+  .badge.merged { color: var(--merged); background: var(--merged-bg); margin-left: 6px; }
+  .meta { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .empty { color: var(--muted); font-size: 12px; padding: 8px; }
+  .log {
+    margin-top: 12px; border: 1px solid var(--border); border-radius: 8px;
+    max-height: 180px; overflow: auto; font-family: var(--mono); font-size: 12px;
+  }
+  .log .line { padding: 4px 10px; border-bottom: 1px solid #f0f1f4; }
+  .log .line:last-child { border-bottom: none; }
+  .log .t { color: var(--muted); margin-right: 8px; }
+  .log .merge { color: var(--merged); }
+  .log .branch { color: var(--delete); }
+  .rules { margin-top: 16px; }
+  .rules h2 { font-size: 15px; margin: 0 0 8px; }
+  .rules ul { margin: 0; padding-left: 20px; }
+  .rules li { margin-bottom: 4px; }
+  code { font-family: var(--mono); background: #f0f1f4; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .selfcheck { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; margin-top: 10px; color: var(--insert); }
+  .selfcheck.fail { color: var(--delete); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>撤销 / 重做命令栈（支持操作合并）</h1>
+    <p>原生 JavaScript 命令模式实现：插入 / 删除 / 替换命令、连续输入合并、分支操作清空重做栈、精确逆操作。</p>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>文本编辑区</h2>
+      <div class="state-row">
+        <span class="pill">撤销栈 <b id="undoCount">0</b></span>
+        <span class="pill">重做栈 <b id="redoCount">0</b></span>
+        <span class="pill">上次动作 <b id="lastAction">—</b></span>
+      </div>
+      <textarea id="editor" spellcheck="false" placeholder="在这里输入：连续快速打字会被合并为一个撤销单元；停顿后再打字会拆成新单元。"></textarea>
+      <div class="toolbar">
+        <button id="btnUndo" class="primary">↶ 撤销</button>
+        <button id="btnRedo">↷ 重做</button>
+        <button id="btnClear">清空历史</button>
+        <span class="hint">
+          快捷键 <kbd>Ctrl/⌘+Z</kbd> 撤销，<kbd>Ctrl/⌘+Shift+Z</kbd> / <kbd>Ctrl+Y</kbd> 重做
+        </span>
+      </div>
+      <div class="toolbar">
+        <label class="hint">合并时间窗
+          <select id="mergeInterval">
+            <option value="0">关闭</option>
+            <option value="300">300ms</option>
+            <option value="500" selected>500ms</option>
+            <option value="1000">1000ms</option>
+            <option value="2000">2000ms</option>
+          </select>
+        </label>
+        <button id="btnSelfCheck">运行内置自检</button>
+      </div>
+      <div class="doc-preview" id="docPreview"></div>
+      <div id="selfCheck" class="selfcheck" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>调试面板 <span class="count">黄色 = 栈顶（下次撤销/重做目标）</span></h2>
+      <div class="stacks">
+        <div class="stack">
+          <header><span>UNDO 撤销栈</span><span id="undoCount2">0</span></header>
+          <ul id="undoList"></ul>
+        </div>
+        <div class="stack">
+          <header><span>REDO 重做栈</span><span id="redoCount2">0</span></header>
+          <ul id="redoList"></ul>
+        </div>
+      </div>
+      <h2 style="margin-top:14px;">操作日志</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+
+  <section class="card rules">
+    <h2>合并判定规则（同时满足才合并）</h2>
+    <ul>
+      <li><b>同类型</b>：插入只能与插入合并，删除只能与删除合并；插入后接删除（或替换）一律不合并。</li>
+      <li><b>单字符</b>：新命令必须且只能是 1 个字符（逐键输入）；粘贴 / 拖拽写入的多字符文本不并入打字单元，已有合并单元的每个分片也都必须是单字符。</li>
+      <li><b>光标邻接</b>：新插入位置紧接当前短语末尾（<code>next.pos === prev.pos + prev.text.length</code>）；删除时新退格位置为 <code>prev.pos - 1</code>（连续 Backspace）。在别处点击输入不合并。</li>
+      <li><b>时间窗</b>：两次输入间隔 ≤ 合并时间窗（默认 500ms，可关闭）；超时拆分为新的撤销单元。</li>
+      <li><b>仅连续编辑</b>：只有正常执行（execute）流中的命令才参与合并；刚执行过 undo / redo 后的第一下输入永远开启新单元。</li>
+      <li><b>替换不合并</b>：<code>ReplaceCommand</code>（选中后输入 / 粘贴覆盖选区）始终独立成单元。</li>
+    </ul>
+  </section>
+</div>
+
+<!-- ================= 引擎（无 DOM 依赖，test.js 直接提取此 script 执行） ================= -->
+<script id="engine">
+(function () {
+  'use strict';
+
+  var nextId = 0;
+
+  /* ---------- 文档模型：一段纯文本，仅接受按位置的精确编辑 ---------- */
+  function TextDoc(initial) {
+    this.value = initial || '';
+  }
+  TextDoc.prototype.insert = function (pos, text) {
+    if (pos < 0 || pos > this.value.length) throw new RangeError('insert position out of range: ' + pos);
+    this.value = this.value.slice(0, pos) + text + this.value.slice(pos);
+  };
+  TextDoc.prototype.remove = function (pos, length) {
+    if (pos < 0 || pos + length > this.value.length) throw new RangeError('remove range out of range');
+    var removed = this.value.slice(pos, pos + length);
+    this.value = this.value.slice(0, pos) + this.value.slice(pos + length);
+    return removed;
+  };
+  TextDoc.prototype.replaceRange = function (pos, oldText, newText) {
+    if (this.value.slice(pos, pos + oldText.length) !== oldText) {
+      throw new Error('replace conflict: expected ' + JSON.stringify(oldText) + ' at ' + pos);
+    }
+    this.value = this.value.slice(0, pos) + newText + this.value.slice(pos + oldText.length);
+  };
+
+  /* ---------- 命令基类：apply 正向执行，undo 精确逆操作，invert 生成逆命令对象 ---------- */
+  function Command(timestamp) {
+    this.id = ++nextId;
+    this.type = 'command';
+    this.timestamp = timestamp == null ? Date.now() : timestamp;
+    this.lastTimestamp = this.timestamp; // 合并后更新为最后一次输入时间
+    this.mergedCount = 1;              // 由多少个单字符命令合并而来
+    this.mergeTimes = [this.timestamp];
+  }
+  Command.prototype.canMerge = function (/* next, intervalMs */) { return false; };
+  Command.prototype.merge = function (/* next */) { throw new Error('not mergeable'); };
+  Command.prototype.copyMetaTo = function (inv) {
+    inv.mergedCount = this.mergedCount;
+    inv.mergeTimes = this.mergeTimes.slice();
+    inv.lastTimestamp = this.lastTimestamp;
+    return inv;
+  };
+
+  /* ---------- 插入 ---------- */
+  function InsertCommand(pos, text, timestamp) {
+    Command.call(this, timestamp);
+    this.type = 'insert';
+    this.pos = pos;
+    this.text = text;
+  }
+  InsertCommand.prototype = Object.create(Command.prototype);
+  InsertCommand.prototype.constructor = InsertCommand;
+  InsertCommand.prototype.apply = function (doc) { doc.insert(this.pos, this.text); };
+  InsertCommand.prototype.undo = function (doc) { doc.remove(this.pos, this.text.length); };
+  InsertCommand.prototype.invert = function () {
+    return this.copyMetaTo(new DeleteCommand(this.pos, this.text, this.lastTimestamp));
+  };
+  InsertCommand.prototype.canMerge = function (next, intervalMs) {
+    if (intervalMs <= 0) return false;                                  // 时间窗关闭
+    if (next.type !== 'insert') return false;                          // 规则1：同类型
+    if (next.text.length !== 1) return false;                          // 规则2：新命令是单字符
+    if (this.text.length !== this.mergedCount) return false;           // 规则2：本单元全部由单字符组成
+    if (next.pos !== this.pos + this.text.length) return false;        // 规则3：末尾邻接
+    var dt = next.timestamp - this.lastTimestamp;                      // 规则4：时间窗
+    return dt >= 0 && dt <= intervalMs;
+  };
+  InsertCommand.prototype.merge = function (next) {
+    this.text += next.text;
+    this.lastTimestamp = next.timestamp;
+    this.mergedCount += 1;
+    this.mergeTimes.push(next.timestamp);
+    return this;
+  };
+  InsertCommand.prototype.caretAfterApply = function () { return this.pos + this.text.length; };
+  InsertCommand.prototype.caretAfterUndo = function () { return this.pos; };
+  InsertCommand.prototype.describe = function () {
+    return '插入 ' + JSON.stringify(this.text) + ' @' + this.pos;
+  };
+
+  /* ---------- 删除（记录被删文本，逆操作即原位插回） ---------- */
+  function DeleteCommand(pos, text, timestamp) {
+    Command.call(this, timestamp);
+    this.type = 'delete';
+    this.pos = pos;
+    this.text = text;
+    this.dir = 'backward'; // backward=Backspace 链；forward=ForwardDelete 链
+  }
+  DeleteCommand.prototype = Object.create(Command.prototype);
+  DeleteCommand.prototype.constructor = DeleteCommand;
+  DeleteCommand.prototype.apply = function (doc) {
+    if (doc.value.slice(this.pos, this.pos + this.text.length) !== this.text) {
+      throw new Error('delete conflict: expected ' + JSON.stringify(this.text) + ' at ' + this.pos);
+    }
+    doc.remove(this.pos, this.text.length);
+  };
+  DeleteCommand.prototype.undo = function (doc) { doc.insert(this.pos, this.text); };
+  DeleteCommand.prototype.invert = function () {
+    return this.copyMetaTo(new InsertCommand(this.pos, this.text, this.lastTimestamp));
+  };
+  DeleteCommand.prototype.canMerge = function (next, intervalMs) {
+    if (intervalMs <= 0) return false;
+    if (next.type !== 'delete') return false;
+    if (next.text.length !== 1) return false;
+    if (this.text.length !== this.mergedCount) return false;
+    var dt = next.timestamp - this.lastTimestamp;
+    if (dt < 0 || dt > intervalMs) return false;
+    // 连续 Backspace：新删除点在左侧；连续 ForwardDelete：删除点不变（右侧字符左移补位）
+    var adjacent = next.pos === this.pos - 1 || next.pos === this.pos;
+    return adjacent;
+  };
+  DeleteCommand.prototype.merge = function (next) {
+    if (next.pos === this.pos - 1) {
+      this.pos = next.pos;
+      this.text = next.text + this.text; // Backspace：新字符拼在前
+    } else {
+      this.text = this.text + next.text; // ForwardDelete：新字符拼在后
+    }
+    this.lastTimestamp = next.timestamp;
+    this.mergedCount += 1;
+    this.mergeTimes.push(next.timestamp);
+    return this;
+  };
+  DeleteCommand.prototype.caretAfterApply = function () { return this.pos; };
+  DeleteCommand.prototype.caretAfterUndo = function () { return this.pos + this.text.length; };
+  DeleteCommand.prototype.describe = function () {
+    return '删除 ' + JSON.stringify(this.text) + ' @' + this.pos;
+  };
+
+  /* ---------- 替换（选中一段后输入 / 粘贴覆盖；永不合并） ---------- */
+  function ReplaceCommand(pos, oldText, newText, timestamp) {
+    Command.call(this, timestamp);
+    this.type = 'replace';
+    this.pos = pos;
+    this.oldText = oldText;
+    this.newText = newText;
+  }
+  ReplaceCommand.prototype = Object.create(Command.prototype);
+  ReplaceCommand.prototype.constructor = ReplaceCommand;
+  ReplaceCommand.prototype.apply = function (doc) { doc.replaceRange(this.pos, this.oldText, this.newText); };
+  ReplaceCommand.prototype.undo = function (doc) { doc.replaceRange(this.pos, this.newText, this.oldText); };
+  ReplaceCommand.prototype.invert = function () {
+    return this.copyMetaTo(new ReplaceCommand(this.pos, this.newText, this.oldText, this.lastTimestamp));
+  };
+  ReplaceCommand.prototype.caretAfterApply = function () { return this.pos + this.newText.length; };
+  ReplaceCommand.prototype.caretAfterUndo = function () { return this.pos + this.oldText.length; };
+  ReplaceCommand.prototype.describe = function () {
+    return '替换 ' + JSON.stringify(this.oldText) + ' → ' + JSON.stringify(this.newText) + ' @' + this.pos;
+  };
+
+  /* ---------- 历史栈 ----------
+   * execute(cmd)：正向执行 → 尝试与栈顶合并 → 否则入撤销栈 → 清空重做栈（分支点）
+   * push(cmd)   ：命令已由外部（DOM 输入）执行，仅做记录，规则同上
+   * undo()：弹出 c，c.undo(doc)，把 c.invert() 逆命令压入重做栈
+   * redo()：弹出逆命令 i，i.undo(doc) 恰好等于重做原操作，再把 i.invert() 压回撤销栈
+   */
+  function History(doc, options) {
+    options = options || {};
+    this.doc = doc;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.mergeInterval = options.mergeInterval == null ? 500 : options.mergeInterval;
+    this.lastAction = null; // 'execute' | 'undo' | 'redo'
+    this.onChange = null;
+  }
+  History.prototype._emit = function (event, cmd, merged) {
+    if (typeof this.onChange === 'function') this.onChange(event, cmd, !!merged);
+  };
+  History.prototype._record = function (cmd, merged) {
+    var top = this.undoStack[this.undoStack.length - 1];
+    if (!merged && this.lastAction === 'execute' && top && top.canMerge(cmd, this.mergeInterval)) {
+      top.merge(cmd);
+      this._emit('merge', top, true);
+      merged = true;
+    }
+    if (!merged) this.undoStack.push(cmd);
+    this.redoStack.length = 0; // 规则：任何新操作（含合并）都使重做栈失效
+    this.lastAction = 'execute';
+    if (!merged) this._emit('execute', cmd, false);
+  };
+  History.prototype.execute = function (cmd) {
+    cmd.apply(this.doc);
+    this._record(cmd, false);
+    return cmd;
+  };
+  History.prototype.pushApplied = function (cmd) { this._record(cmd, false); return cmd; };
+  History.prototype.canUndo = function () { return this.undoStack.length > 0; };
+  History.prototype.canRedo = function () { return this.redoStack.length > 0; };
+  History.prototype.undo = function () {
+    var cmd = this.undoStack.pop();
+    if (!cmd) return null;
+    cmd.undo(this.doc);
+    this.redoStack.push(cmd.invert());
+    this.lastAction = 'undo';
+    this._emit('undo', cmd, false);
+    return cmd;
+  };
+  History.prototype.redo = function () {
+    var inv = this.redoStack.pop();
+    if (!inv) return null;
+    inv.undo(this.doc);
+    this.undoStack.push(inv.invert());
+    this.lastAction = 'redo';
+    this._emit('redo', inv, false);
+    return inv;
+  };
+  History.prototype.clear = function () {
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.lastAction = null;
+    this._emit('clear', null, false);
+  };
+
+  var api = {
+    TextDoc: TextDoc,
+    Command: Command,
+    InsertCommand: InsertCommand,
+    DeleteCommand: DeleteCommand,
+    ReplaceCommand: ReplaceCommand,
+    History: History
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (typeof window !== 'undefined') window.UndoRedo = api;
+})();
+</script>
+
+<!-- ================= DOM 装配层 ================= -->
+<script>
+(function () {
+  'use strict';
+  var E = window.UndoRedo;
+
+  var editor = document.getElementById('editor');
+  var btnUndo = document.getElementById('btnUndo');
+  var btnRedo = document.getElementById('btnRedo');
+  var btnClear = document.getElementById('btnClear');
+  var intervalSel = document.getElementById('mergeInterval');
+  var undoList = document.getElementById('undoList');
+  var redoList = document.getElementById('redoList');
+  var logBox = document.getElementById('log');
+  var docPreview = document.getElementById('docPreview');
+  var selfCheckBox = document.getElementById('selfCheck');
+
+  var doc = new E.TextDoc('');
+  var history = new E.History(doc, { mergeInterval: 500 });
+  var composing = false;
+
+  /* 由 textarea 变更前后的两个字符串推导精确命令（最长公共前缀/后缀） */
+  function diffCommand(oldVal, newVal) {
+    var p = 0;
+    var max = Math.min(oldVal.length, newVal.length);
+    while (p < max && oldVal[p] === newVal[p]) p++;
+    var s = 0;
+    while (s < max - p &&
+           oldVal[oldVal.length - 1 - s] === newVal[newVal.length - 1 - s]) s++;
+    var removed = oldVal.slice(p, oldVal.length - s);
+    var inserted = newVal.slice(p, newVal.length - s);
+    if (removed === '' && inserted === '') return null;
+    if (removed === '') return new E.InsertCommand(p, inserted, Date.now());
+    if (inserted === '') return new E.DeleteCommand(p, removed, Date.now());
+    return new E.ReplaceCommand(p, removed, inserted, Date.now());
+  }
+
+  function syncCaret(cmd, undone) {
+    var pos = undone ? cmd.caretAfterUndo() : cmd.caretAfterApply();
+    editor.selectionStart = editor.selectionEnd = Math.max(0, Math.min(pos, editor.value.length));
+  }
+
+  function recordDomChange() {
+    var oldVal = doc.value;
+    var newVal = editor.value;
+    if (oldVal === newVal) return;
+    var cmd = diffCommand(oldVal, newVal);
+    if (!cmd) return;
+    cmd.apply(doc); // 与 DOM 变更对齐（内容必然一致），随后只入栈
+    history.pushApplied(cmd);
+  }
+
+  editor.addEventListener('compositionstart', function () { composing = true; });
+  editor.addEventListener('compositionend', function () {
+    composing = false;
+    recordDomChange();
+  });
+  editor.addEventListener('input', function () {
+    if (!composing) recordDomChange();
+  });
+
+  function doUndo() {
+    var cmd = history.undo();
+    if (cmd) { editor.value = doc.value; syncCaret(cmd, true); }
+    editor.focus();
+  }
+  function doRedo() {
+    var inv = history.redo();
+    if (inv) { editor.value = doc.value; syncCaret(inv, false); }
+    editor.focus();
+  }
+  btnUndo.addEventListener('click', doUndo);
+  btnRedo.addEventListener('click', doRedo);
+  btnClear.addEventListener('click', function () { history.clear(); });
+  intervalSel.addEventListener('change', function () {
+    history.mergeInterval = Number(intervalSel.value);
+  });
+
+  editor.addEventListener('keydown', function (e) {
+    var mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    var key = e.key.toLowerCase();
+    if (key === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
+    else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); doRedo(); }
+  });
+
+  /* ---------- 调试面板渲染 ---------- */
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function cmdItem(cmd, idx, isTop) {
+    var merged = cmd.mergedCount > 1
+      ? '<span class="badge merged">已合并 ×' + cmd.mergedCount + '</span>' : '';
+    return '<li class="' + (isTop ? 'top' : '') + '">'
+      + '<span class="idx">#' + idx + '</span>'
+      + '<span class="badge ' + cmd.type + '">' + cmd.type + '</span>'
+      + esc(cmd.describe()) + merged
+      + '<span class="meta">id=' + cmd.id
+      + ' · t0=' + cmd.timestamp
+      + (cmd.mergedCount > 1 ? ' · tlast=' + cmd.lastTimestamp : '')
+      + '</span></li>';
+  }
+  function renderStack(listEl, stack, topFirst) {
+    if (!stack.length) { listEl.innerHTML = '<div class="empty">（空）</div>'; return; }
+    var ordered = stack.map(function (c, i) { return { c: c, i: i }; });
+    if (topFirst) ordered.reverse();
+    listEl.innerHTML = ordered.map(function (o) {
+      return cmdItem(o.c, o.i, o.i === stack.length - 1);
+    }).join('');
+  }
+  function logLine(kind, text) {
+    var t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    var div = document.createElement('div');
+    div.className = 'line ' + kind;
+    div.innerHTML = '<span class="t">' + t + '</span>' + text;
+    logBox.appendChild(div);
+    logBox.scrollTop = logBox.scrollHeight;
+    while (logBox.children.length > 60) logBox.removeChild(logBox.firstChild);
+  }
+
+  history.onChange = function (event, cmd, merged) {
+    if (event === 'merge') logLine('merge', '合并 → 并入栈顶单元（' + esc(cmd.describe()) + '，现 ×' + cmd.mergedCount + '）');
+    else if (event === 'execute') logLine('', 'execute → ' + esc(cmd.describe()));
+    else if (event === 'undo') logLine('', 'undo ← ' + esc(cmd.describe()) + '，逆命令已进入重做栈');
+    else if (event === 'redo') logLine('', 'redo → 重做栈逆命令 ' + esc(cmd.describe()));
+    else if (event === 'clear') logLine('branch', 'clear → 两栈已清空');
+    render();
+  };
+
+  function render() {
+    renderStack(undoList, history.undoStack, true);
+    renderStack(redoList, history.redoStack, true);
+    document.getElementById('undoCount').textContent = history.undoStack.length;
+    document.getElementById('redoCount').textContent = history.redoStack.length;
+    document.getElementById('undoCount2').textContent = history.undoStack.length;
+    document.getElementById('redoCount2').textContent = history.redoStack.length;
+    document.getElementById('lastAction').textContent = history.lastAction || '—';
+    btnUndo.disabled = !history.canUndo();
+    btnRedo.disabled = !history.canRedo();
+    docPreview.textContent = 'doc = ' + JSON.stringify(doc.value);
+  }
+
+  /* ---------- 内置自检（与 node test.js 同一套断言的精简版） ---------- */
+  document.getElementById('btnSelfCheck').addEventListener('click', function () {
+    var results = [];
+    function assert(cond, msg) { if (!cond) throw new Error(msg); }
+    try {
+      var d = new E.TextDoc('');
+      var h = new E.History(d, { mergeInterval: 500 });
+      h.execute(new E.InsertCommand(0, 'a', 1000));
+      h.execute(new E.InsertCommand(1, 'b', 1200));
+      h.execute(new E.InsertCommand(2, 'c', 1400));
+      assert(h.undoStack.length === 1, '连续单字符插入应合并为 1 个单元');
+      assert(d.value === 'abc', '文档应为 abc');
+      h.undo();
+      assert(d.value === '', '撤销一次撤掉整个短语');
+      assert(h.redoStack.length === 1, '逆命令应进入重做栈');
+      h.execute(new E.InsertCommand(0, 'x', 1500));
+      assert(h.redoStack.length === 0, '分支操作必须清空重做栈');
+      assert(h.redo() === null, '已清空的重做栈不得重做出旧操作');
+      assert(d.value === 'x', '分支后文档应为 x');
+
+      var d2 = new E.TextDoc('');
+      var h2 = new E.History(d2, { mergeInterval: 500 });
+      h2.execute(new E.InsertCommand(0, 'a', 2000));
+      h2.execute(new E.InsertCommand(1, 'b', 3000)); // 超过 500ms
+      assert(h2.undoStack.length === 2, '超时间隔不得合并');
+      h2.execute(new E.DeleteCommand(2, 'b', 3100)); // 插入后删除
+      assert(h2.undoStack.length === 3, '插入后删除不得跨类型合并');
+
+      results.push('✅ 内置自检全部通过（合并 / 时间窗 / 跨类型 / 分支清空 / 逆操作）');
+      selfCheckBox.classList.remove('fail');
+    } catch (err) {
+      results.push('❌ 自检失败：' + err.message);
+      selfCheckBox.classList.add('fail');
+    }
+    selfCheckBox.textContent = results.join('\n');
+    selfCheckBox.hidden = false;
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
